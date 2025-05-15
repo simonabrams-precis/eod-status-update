@@ -24,6 +24,36 @@ def handle_verification(body, ack):
 def handle_health_check(message, say):
     say("Bot is up and running!")
 
+# Add slash command to manually trigger EOD status update
+@app.command("/eod-status")
+def handle_eod_status_command(ack, body, client, logger):
+    # Acknowledge the command request immediately
+    ack()
+    logger.info(f"EOD status command triggered by {body['user_id']}")
+    
+    # Use asyncio to run the async function in a new event loop
+    async def _send_prompt():
+        try:
+            await send_initial_prompt(body["user_id"])
+        except Exception as e:
+            logger.error(f"Error in eod-status command: {e}")
+            try:
+                await client.chat_postEphemeral(
+                    channel=body["channel_id"],
+                    user=body["user_id"],
+                    text="Sorry, there was an error processing your request. Please try again."
+                )
+            except Exception as e2:
+                logger.error(f"Error sending error message: {e2}")
+
+    # Create a new event loop and run the async function
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_send_prompt())
+    finally:
+        loop.close()
+
 # Function to get the list of developer user IDs (replace with your logic)
 def get_developer_user_ids():
     try:
@@ -257,7 +287,7 @@ async def schedule_reminders():
 
 async def main():
     # Set up the app to listen on the specified port
-    port = int(os.environ.get("PORT", 5002))
+    port = int(os.environ.get("PORT", 3000))
     
     # Start the Slack Bolt app
     from threading import Thread

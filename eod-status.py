@@ -1,71 +1,56 @@
 import os
-from slack_bolt import App
-from slack_bolt.adapter.socket_mode import SocketModeHandler
-from slack_sdk import WebClient
+from slack_bolt.async_app import AsyncApp
+from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_sdk.web.async_client import AsyncWebClient
 from datetime import datetime, time
 import pytz
 import asyncio
 from dotenv import load_dotenv
+import logging
+
+# Set up logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize your Slack app with your bot token
-app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
-client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
+app = AsyncApp(token=os.environ.get("SLACK_BOT_TOKEN"))
+client = AsyncWebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 
 # Handle URL verification challenge
 @app.event("url_verification")
-def handle_verification(body, ack):
-    ack({"challenge": body["challenge"]})
+async def handle_verification(body, ack):
+    await ack({"challenge": body["challenge"]})
 
 # Add a simple health check endpoint
 @app.message("health_check")
-def handle_health_check(message, say):
-    say("Bot is up and running!")
+async def handle_health_check(message, say):
+    await say("Bot is up and running!")
 
 # Add slash command to manually trigger EOD status update
 @app.command("/eod-status")
-def handle_eod_status_command(ack, body, client, logger):
+async def handle_eod_status_command(ack, body, client, logger):
     # Acknowledge the command request immediately
-    ack()
+    await ack()
     logger.info(f"EOD status command triggered by {body['user_id']}")
     
-    # Use asyncio to run the async function in a new event loop
-    async def _send_prompt():
-        try:
-            await send_initial_prompt(body["user_id"])
-        except Exception as e:
-            logger.error(f"Error in eod-status command: {e}")
-            try:
-                await client.chat_postEphemeral(
-                    channel=body["channel_id"],
-                    user=body["user_id"],
-                    text="Sorry, there was an error processing your request. Please try again."
-                )
-            except Exception as e2:
-                logger.error(f"Error sending error message: {e2}")
+    # Send the initial prompt to start the status update flow
+    await send_initial_prompt(body["user_id"])
 
-    # Create a new event loop and run the async function
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+# Function to get the list of developer user IDs
+async def get_developer_user_ids():
     try:
-        loop.run_until_complete(_send_prompt())
-    finally:
-        loop.close()
-
-# Function to get the list of developer user IDs (replace with your logic)
-def get_developer_user_ids():
-    try:
-        usergroup_id = os.environ.get("DEVELOPER_USERGROUP_ID")  # Get from environment variable
-        users_in_group = client.usergroups.users.list(usergroup=usergroup_id)
+        usergroup_id = os.environ.get("DEVELOPER_USERGROUP_ID")
+        users_in_group = await client.usergroups_users_list(usergroup=usergroup_id)
         if users_in_group and users_in_group["ok"]:
             return users_in_group["users"]
         else:
-            print(f"Error fetching users in group: {users_in_group.get('error')}")
+            logger.error(f"Error fetching users in group: {users_in_group.get('error')}")
             return []
     except Exception as e:
-        print(f"Error getting developer user IDs: {e}")
+        logger.error(f"Error getting developer user IDs: {e}")
         return []
 
 # Modal definition for submitting status
@@ -100,7 +85,7 @@ def build_status_modal(channel_id):
 # Initial reminder with "Yes" or "No"
 async def send_initial_prompt(user_id):
     try:
-        client.chat_postMessage(
+        await client.chat_postMessage(
             channel=user_id,
             text="Do you have any end-of-day status updates to share today?",
             blocks=[
@@ -124,15 +109,20 @@ async def send_initial_prompt(user_id):
 
 # Handle the initial "Yes" or "No" response
 @app.action("initial_update_choice")
-async def handle_initial_choice(ack, body, client):
+async def handle_initial_choice(ack, body, client, logger):
+    # Log the incoming request body for debugging
+    logger.info(f"Initial choice body: {body}")
+    
+    # Acknowledge the request immediately
     await ack()
+    
     user_id = body["user"]["id"]
-    choice = body["actions"][0]["value"]
+    choice = body["actions"][0]["selected_option"]["value"]
 
     if choice == "yes_update":
-        # Get a list of relevant project channels (you'll need to define this logic)
-        # For now, let's assume you have a function to get these
         project_channels = await get_relevant_project_channels()
+        # log the project channels
+        logger.info(f"Project channels: {project_channels}")
         if project_channels:
             channel_options = [{"text": {"type": "plain_text", "text": channel["name"]}, "value": channel["id"]} for channel in project_channels]
             await client.chat_postMessage(
@@ -164,47 +154,94 @@ async def handle_initial_choice(ack, body, client):
 
 # Function to fetch relevant project channels (customize this based on your workspace)
 async def get_relevant_project_channels():
-    # Example: Fetch all public channels. You might want to filter based on naming conventions or user group membership.
+    """
+    Fetch relevant project channels that the user can post to.
+    Currently returns all public channels the bot is a member of.
+    """
     try:
-        channels_response = await client.conversations_list(types="public_channel")
-        if channels_response and channels_response["ok"]:
-            return channels_response["channels"]
-        else:
-            print(f"Error fetching channels: {channels_response.get('error')}")
+        # First get all channels the bot is in
+        logger.info("Fetching channels...")
+        channels_response = await client.conversations_list(
+            types="public_channel",
+            exclude_archived=True,
+            limit=1000
+        )
+        
+        logger.info(f"Channels response: {channels_response}")
+        
+        if not channels_response or not channels_response["ok"]:
+            logger.error(f"Error fetching channels: {channels_response.get('error')}")
             return []
+
+        # Get all channels first
+        all_channels = channels_response["channels"]
+        logger.info(f"Total channels found: {len(all_channels)}")
+        
+        # Get bot's user ID
+        auth_response = await client.auth_test()
+        bot_user_id = auth_response["user_id"]
+        logger.info(f"Bot user ID: {bot_user_id}")
+        
+        # Get channels the bot is a member of
+        bot_channels = []
+        for channel in all_channels:
+            try:
+                # Check if bot is a member
+                members_response = await client.conversations_members(channel=channel["id"])
+                if members_response["ok"] and bot_user_id in members_response["members"]:
+                    bot_channels.append(channel)
+                    logger.info(f"Bot is a member of channel: {channel['name']}")
+            except Exception as e:
+                logger.error(f"Error checking membership for channel {channel['name']}: {e}")
+                continue
+
+        logger.info(f"Channels bot is a member of: {len(bot_channels)}")
+        return bot_channels
+
     except Exception as e:
-        print(f"Error getting project channels: {e}")
+        logger.error(f"Error in get_relevant_project_channels: {e}")
         return []
 
 # Handle the selection of the project channel
 @app.action("select_project_channel")
-async def handle_project_selection(ack, body, client):
+async def handle_project_selection(ack, body, client, logger):
     await ack()
-    user_id = body["user"]["id"]
-    channel_id = body["actions"][0]["selected_option"]["value"]
-    await client.views_open(
-        trigger_id=body["trigger_id"],
-        view=build_status_modal(channel_id)
-    )
+    
+    try:
+        user_id = body["user"]["id"]
+        channel_id = body["actions"][0]["selected_option"]["value"]
+        await client.views_open(
+            trigger_id=body["trigger_id"],
+            view=build_status_modal(channel_id)
+        )
+    except Exception as e:
+        logger.error(f"Error in project selection: {e}")
+        await client.chat_postEphemeral(
+            channel=user_id,
+            user=user_id,
+            text="Sorry, there was an error opening the status form. Please try again."
+        )
 
 # Handle the modal submission
 @app.view("status_submission")
-async def handle_status_submission(ack, body, view, client):
+async def handle_status_submission(ack, body, view, client, logger):
     await ack()
-    user_id = body["user"]["id"]
-    channel_id = body["view"]["private_metadata"]
-    update_text = view["state"]["values"]["update_block"]["update_text"]["value"]
-    technical_details = view["state"]["values"]["technical_details_block"]["technical_details_text"]["value"] if "technical_details_block" in view["state"]["values"] and "technical_details_text" in view["state"]["values"]["technical_details_block"] else None
-
-    message = f"*Status Update from <@{user_id}>:*\n{update_text}"
-    if technical_details:
-        message += f"\n*Technical Details:*\n{technical_details}"
-
+    
     try:
+        user_id = body["user"]["id"]
+        channel_id = body["view"]["private_metadata"]
+        update_text = view["state"]["values"]["update_block"]["update_text"]["value"]
+        technical_details = view["state"]["values"]["technical_details_block"]["technical_details_text"]["value"] if "technical_details_block" in view["state"]["values"] and "technical_details_text" in view["state"]["values"]["technical_details_block"] else None
+
+        message = f"*Status Update from <@{user_id}>:*\n{update_text}"
+        if technical_details:
+            message += f"\n*Technical Details:*\n{technical_details}"
+
         await client.chat_postMessage(
             channel=channel_id,
             text=message
         )
+        
         # Ask if they have another project to update
         await client.chat_postMessage(
             channel=user_id,
@@ -226,86 +263,100 @@ async def handle_status_submission(ack, body, view, client):
             ]
         )
     except Exception as e:
-        print(f"Error sending status update to {channel_id}: {e}")
+        logger.error(f"Error in status submission: {e}")
         await client.chat_postEphemeral(
             channel=user_id,
-            text=f"There was an error posting your update to <#{channel_id}>. Please try again."
+            user=user_id,
+            text="Sorry, there was an error posting your update. Please try again."
         )
 
 # Handle the "Yes" or "No" for another update
 @app.action("another_update_choice")
-async def handle_another_update(ack, body, client):
+async def handle_another_update(ack, body, client, logger):
     await ack()
-    user_id = body["user"]["id"]
-    choice = body["actions"][0]["value"]
+    
+    try:
+        user_id = body["user"]["id"]
+        choice = body["actions"][0]["selected_option"]["value"]
 
-    if choice == "yes_another":
-        project_channels = await get_relevant_project_channels()
-        if project_channels:
-            channel_options = [{"text": {"type": "plain_text", "text": channel["name"]}, "value": channel["id"]} for channel in project_channels]
-            await client.chat_postMessage(
-                channel=user_id,
-                text="Which project channel would you like to update?",
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": "Please select another project channel:"},
-                        "accessory": {
-                            "type": "static_select",
-                            "placeholder": {"type": "plain_text", "text": "Select a channel"},
-                            "options": channel_options,
-                            "action_id": "select_project_channel"
+        if choice == "yes_another":
+            project_channels = await get_relevant_project_channels()
+            if project_channels:
+                channel_options = [{"text": {"type": "plain_text", "text": channel["name"]}, "value": channel["id"]} for channel in project_channels]
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text="Which project channel would you like to update?",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "Please select another project channel:"},
+                            "accessory": {
+                                "type": "static_select",
+                                "placeholder": {"type": "plain_text", "text": "Select a channel"},
+                                "options": channel_options,
+                                "action_id": "select_project_channel"
+                            }
                         }
-                    }
-                ]
-            )
-        else:
+                    ]
+                )
+            else:
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text="It seems there are no project channels available to update right now."
+                )
+        elif choice == "no_another":
             await client.chat_postMessage(
                 channel=user_id,
-                text="It seems there are no project channels available to update right now."
+                text="Got it. Thanks for your updates!"
             )
-    elif choice == "no_another":
-        await client.chat_postMessage(
+    except Exception as e:
+        logger.error(f"Error in another update choice: {e}")
+        await client.chat_postEphemeral(
             channel=user_id,
-            text="Got it. Thanks for your updates!"
+            user=user_id,
+            text="Sorry, there was an error processing your choice. Please try again."
         )
-
-# Schedule the daily reminders (adjust time as needed)
-async def schedule_reminders():
-    target_reminder_time = time(16, 0, 0)  # 4:00 PM EST
-    ny_tz = pytz.timezone("America/New_York")
-
-    while True:
-        now = datetime.now(ny_tz).time()
-        today = datetime.now(ny_tz).date()
-        if today.weekday() < 5: # Monday to Friday
-            if now.hour == target_reminder_time.hour and now.minute == target_reminder_time.minute and now.second == 0:
-                developers = get_developer_user_ids()
-                for dev_id in developers:
-                    await send_initial_prompt(dev_id)
-        await asyncio.sleep(60) # Check every minute
 
 async def main():
     # Set up the app to listen on the specified port
     port = int(os.environ.get("PORT", 3000))
     
-    # Start the Slack Bolt app
-    from threading import Thread
-    bolt_thread = Thread(target=lambda: app.start(port=port))
-    bolt_thread.daemon = True
-    bolt_thread.start()
+    # Initialize Socket Mode handler
+    handler = AsyncSocketModeHandler(app, os.environ.get("APP_LEVEL_TOKEN"))
     
-    # Start the reminder schedule
-    await schedule_reminders()
+    # Start the app in Socket Mode
+    await handler.start_async()
+    
+    # Also start the HTTP server for slash commands and interactivity
+    from slack_bolt.adapter.asgi import SlackRequestHandler
+    from asgiref.wsgi import WsgiToAsgi
+    from flask import Flask, request
+    
+    flask_app = Flask(__name__)
+    slack_handler = SlackRequestHandler(app)
+    
+    @flask_app.route("/slack/events", methods=["POST"])
+    async def slack_events():
+        return await slack_handler.handle(request)
+    
+    # Start Flask in a separate thread
+    from hypercorn.asyncio import serve
+    from hypercorn.config import Config
+    
+    config = Config()
+    config.bind = [f"0.0.0.0:{port}"]
+    
+    await serve(flask_app, config)
 
 if __name__ == "__main__":
     # Environment variables are now loaded from .env file
     # Send a test message if needed
-    try:
-        test_channel = os.environ.get("TEST_CHANNEL", "#test_channel")
-        client.chat_postMessage(channel=test_channel, text="Bot is starting up!")
-    except Exception as e:
-        print(f"Could not send test message: {e}")
+    async def send_test_message():
+        try:
+            test_channel = os.environ.get("TEST_CHANNEL", "#test_channel")
+            await client.chat_postMessage(channel=test_channel, text="Bot is starting up!")
+        except Exception as e:
+            logger.error(f"Could not send test message: {e}")
     
     # Run the main function
     asyncio.run(main(), debug=True)

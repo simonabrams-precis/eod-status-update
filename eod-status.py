@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import logging
 import aioschedule
 from typing import Dict, List
+import json
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -138,92 +139,113 @@ def get_fallback_developer_ids():
         return []
 
 # Modal definition for submitting status
-def build_status_modal(channel_id):
-    return {
-        "type": "modal",
-        "callback_id": "status_submission",
-        "private_metadata": channel_id,
-        "title": {"type": "plain_text", "text": "Project Status Update"},
-        "blocks": [
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": f"Updating status for <#{channel_id}>"}
-            },
-            {
-                "type": "input",
-                "block_id": "update_block",
-                "label": {"type": "plain_text", "text": "What's your update?"},
-                "element": {
-                    "type": "plain_text_input",
-                    "multiline": True,
-                    "action_id": "update_text"
-                }
-            },
-            {
-                "type": "input",
-                "block_id": "next_steps_block",
-                "label": {"type": "plain_text", "text": "Next Steps"},
-                "element": {
-                    "type": "plain_text_input",
-                    "multiline": True,
-                    "action_id": "next_steps_text",
-                    "placeholder": {"type": "plain_text", "text": "What needs to be done next?"}
-                }
-            },
-            {
-                "type": "input",
-                "block_id": "priority_block",
-                "label": {"type": "plain_text", "text": "Priority"},
-                "element": {
-                    "type": "static_select",
-                    "placeholder": {"type": "plain_text", "text": "Select priority"},
-                    "options": [
-                        {"text": {"type": "plain_text", "text": "High"}, "value": "high"},
-                        {"text": {"type": "plain_text", "text": "Medium"}, "value": "medium"},
-                        {"text": {"type": "plain_text", "text": "Low"}, "value": "low"}
-                    ],
-                    "action_id": "priority_select"
-                }
-            },
-            {
-                "type": "input",
-                "block_id": "technical_details_block",
-                "optional": True,
-                "label": {"type": "plain_text", "text": "🤓 Dev Notes (optional)"},
-                "element": {
-                    "type": "plain_text_input",
-                    "multiline": True,
-                    "action_id": "technical_details_text"
-                }
-            },
-            {
-                "type": "input",
-                "block_id": "blockers_block",
-                "optional": True,
-                "label": {"type": "plain_text", "text": "🚫 Blockers? (optional)"},
-                "element": {
-                    "type": "static_select",
-                    "placeholder": {"type": "plain_text", "text": "Select an option"},
-                    "options": [
-                        {"text": {"type": "plain_text", "text": "Yes"}, "value": "yes"},
-                        {"text": {"type": "plain_text", "text": "No"}, "value": "no"}
-                    ],
-                    "action_id": "blockers_select"
-                }
-            },
-            {
-                "type": "input",
-                "block_id": "blockers_details_block",
-                "optional": True,
-                "label": {"type": "plain_text", "text": "Blockers Details (optional)"},
-                "element": {
-                    "type": "plain_text_input",
-                    "multiline": True,
-                    "action_id": "blockers_details_text"
+def build_status_modal(channel_id, form_data=None):
+    """
+    Build the status modal with optional pre-filled data.
+    form_data is only provided when editing an existing status.
+    """
+    blocks = [
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"Updating status for <#{channel_id}>"}
+        },
+        {
+            "type": "input",
+            "block_id": "update_block",
+            "label": {"type": "plain_text", "text": "What's your update?"},
+            "element": {
+                "type": "plain_text_input",
+                "multiline": True,
+                "action_id": "update_text",
+                "initial_value": form_data.get("update_text", "") if form_data else ""
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "next_steps_block",
+            "label": {"type": "plain_text", "text": "Next Steps"},
+            "element": {
+                "type": "plain_text_input",
+                "multiline": True,
+                "action_id": "next_steps_text",
+                "initial_value": form_data.get("next_steps", "") if form_data else "",
+                "placeholder": {"type": "plain_text", "text": "What needs to be done next?"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "priority_block",
+            "label": {"type": "plain_text", "text": "Priority"},
+            "element": {
+                "type": "static_select",
+                "placeholder": {"type": "plain_text", "text": "Select priority"},
+                "options": [
+                    {"text": {"type": "plain_text", "text": "High"}, "value": "high"},
+                    {"text": {"type": "plain_text", "text": "Medium"}, "value": "medium"},
+                    {"text": {"type": "plain_text", "text": "Low"}, "value": "low"}
+                ],
+                "action_id": "priority_select",
+                "initial_option": {
+                    "text": {"type": "plain_text", "text": (form_data.get("priority", "medium") if form_data else "medium").title()},
+                    "value": form_data.get("priority", "medium") if form_data else "medium"
                 }
             }
-        ],
-        "submit": {"type": "plain_text", "text": "Submit"}
+        },
+        {
+            "type": "input",
+            "block_id": "technical_details_block",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "🤓 Dev Notes (optional)"},
+            "element": {
+                "type": "plain_text_input",
+                "multiline": True,
+                "action_id": "technical_details_text",
+                "initial_value": form_data.get("technical_details", "") if form_data else ""
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "blockers_block",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "🚫 Blockers? (optional)"},
+            "element": {
+                "type": "static_select",
+                "placeholder": {"type": "plain_text", "text": "Select an option"},
+                "options": [
+                    {"text": {"type": "plain_text", "text": "Yes"}, "value": "yes"},
+                    {"text": {"type": "plain_text", "text": "No"}, "value": "no"}
+                ],
+                "action_id": "blockers_select",
+                "initial_option": {
+                    "text": {"type": "plain_text", "text": "Yes" if form_data and form_data.get("blockers") == "yes" else "No"},
+                    "value": form_data.get("blockers", "no") if form_data else "no"
+                }
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "blockers_details_block",
+            "optional": True,
+            "label": {"type": "plain_text", "text": "Blockers Details (optional)"},
+            "element": {
+                "type": "plain_text_input",
+                "multiline": True,
+                "action_id": "blockers_details_text",
+                "initial_value": form_data.get("blockers_details", "") if form_data else ""
+            }
+        }
+    ]
+
+    return {
+        "type": "modal",
+        "callback_id": "status_submission_edit" if form_data else "status_submission",
+        "private_metadata": json.dumps({
+            "channel_id": channel_id,
+            "message_ts": form_data.get("message_ts") if form_data else None
+        }) if form_data else channel_id,
+        "title": {"type": "plain_text", "text": "Edit Status Update" if form_data else "Project Status Update"},
+        "blocks": blocks,
+        "submit": {"type": "plain_text", "text": "Update" if form_data else "Submit"}
     }
 
 # Initial reminder with "Yes" or "No"
@@ -251,52 +273,18 @@ async def send_initial_prompt(user_id):
     except Exception as e:
         print(f"Error sending initial prompt to {user_id}: {e}")
 
-# Handle the initial "Yes" or "No" response
-@app.action("initial_update_choice")
-async def handle_initial_choice(ack, body, client, logger):
-    await ack()
-    
+# Function to get user's timezone
+async def get_user_timezone(user_id: str) -> str:
+    """Get a user's timezone from their Slack profile."""
     try:
-        user_id = body["user"]["id"]
-        choice = body["actions"][0]["selected_option"]["value"]
-
-        if choice == "yes_update":
-            project_channels = await get_relevant_project_channels()
-            if project_channels:
-                channel_options = [{"text": {"type": "plain_text", "text": channel["name"]}, "value": channel["id"]} for channel in project_channels]
-                await client.chat_postMessage(
-                    channel=user_id,
-                    text="Which project channel would you like to update?",
-                    blocks=[
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": "🎯 *Select the project channel you want to update:*"},
-                            "accessory": {
-                                "type": "static_select",
-                                "placeholder": {"type": "plain_text", "text": "Choose a channel 📝"},
-                                "options": channel_options,
-                                "action_id": "select_project_channel"
-                            }
-                        }
-                    ]
-                )
-            else:
-                await client.chat_postMessage(
-                    channel=user_id,
-                    text="😕 It seems there are no project channels available to update right now."
-                )
-        elif choice == "no_update":
-            await client.chat_postMessage(
-                channel=user_id,
-                text="👋 No worries! Have a productive day! 💪"
-            )
+        user_info = await client.users_info(user=user_id)
+        if user_info["ok"]:
+            tz = user_info["user"].get("tz", "UTC")
+            return tz
+        return "UTC"
     except Exception as e:
-        logger.error(f"Error in initial choice: {e}")
-        await client.chat_postEphemeral(
-            channel=user_id,
-            user=user_id,
-            text="😅 Oops! Something went wrong while processing your choice. Please try again!"
-        )
+        logger.error(f"Error getting timezone for user {user_id}: {e}")
+        return "UTC"
 
 # Function to fetch relevant project channels (customize this based on your workspace)
 async def get_relevant_project_channels():
@@ -348,7 +336,194 @@ async def get_relevant_project_channels():
         logger.error(f"Error in get_relevant_project_channels: {e}")
         return []
 
-# Handle the selection of the project channel
+# Function to get current time in user's timezone
+def get_user_local_time(user_tz: str) -> datetime:
+    """Get current time in user's timezone."""
+    try:
+        tz = pytz.timezone(user_tz)
+        return datetime.now(tz)
+    except Exception as e:
+        logger.error(f"Error converting to timezone {user_tz}: {e}")
+        return datetime.now(pytz.UTC)
+
+# Handle the initial "Yes" or "No" response
+@app.action("initial_update_choice")
+async def handle_initial_choice(ack, body, client, logger):
+    await ack()
+    
+    try:
+        user_id = body["user"]["id"]
+        choice = body["actions"][0]["selected_option"]["value"]
+
+        if choice == "yes_update":
+            project_channels = await get_relevant_project_channels()
+            if project_channels:
+                channel_options = [{"text": {"type": "plain_text", "text": channel["name"]}, "value": channel["id"]} for channel in project_channels]
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text="Which project channel would you like to update?",
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "🎯 *Select the project channel you want to update:*"},
+                            "accessory": {
+                                "type": "static_select",
+                                "placeholder": {"type": "plain_text", "text": "Choose a channel 📝"},
+                                "options": channel_options,
+                                "action_id": "select_project_channel"
+                            }
+                        }
+                    ]
+                )
+            else:
+                await client.chat_postMessage(
+                    channel=user_id,
+                    text="😕 It seems there are no project channels available to update right now."
+                )
+        elif choice == "no_update":
+            await client.chat_postMessage(
+                channel=user_id,
+                text="👋 No worries! Have a productive day! 💪"
+            )
+    except Exception as e:
+        logger.error(f"Error in initial choice: {e}")
+        await client.chat_postEphemeral(
+            channel=user_id,
+            user=user_id,
+            text="😅 Oops! Something went wrong while processing your choice. Please try again!"
+        )
+
+# Add edit button handler right here
+@app.action("edit_status_update")
+async def handle_edit_status(ack, body, client, logger):
+    """Handle the edit button click on a status update."""
+    await ack()
+    logger.info(f"Edit status update triggered: {body}")
+    
+    try:
+        # Parse the button value
+        value_data = json.loads(body["actions"][0]["value"])
+        channel_id = value_data["channel_id"]
+        form_data = value_data["form_data"]
+        message_ts = value_data["message_ts"]
+        
+        # Build the modal with pre-filled values, handling None values
+        modal = {
+            "type": "modal",
+            "callback_id": "status_submission_edit",
+            "private_metadata": json.dumps({
+                "channel_id": channel_id,
+                "message_ts": message_ts
+            }),
+            "title": {"type": "plain_text", "text": "Edit Status Update"},
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"Editing status update for <#{channel_id}>"}
+                },
+                {
+                    "type": "input",
+                    "block_id": "update_block",
+                    "label": {"type": "plain_text", "text": "What's your update?"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "multiline": True,
+                        "action_id": "update_text",
+                        "initial_value": form_data.get("update_text", "")
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "next_steps_block",
+                    "label": {"type": "plain_text", "text": "Next Steps"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "multiline": True,
+                        "action_id": "next_steps_text",
+                        "initial_value": form_data.get("next_steps", ""),
+                        "placeholder": {"type": "plain_text", "text": "What needs to be done next?"}
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "priority_block",
+                    "label": {"type": "plain_text", "text": "Priority"},
+                    "element": {
+                        "type": "static_select",
+                        "placeholder": {"type": "plain_text", "text": "Select priority"},
+                        "options": [
+                            {"text": {"type": "plain_text", "text": "High"}, "value": "high"},
+                            {"text": {"type": "plain_text", "text": "Medium"}, "value": "medium"},
+                            {"text": {"type": "plain_text", "text": "Low"}, "value": "low"}
+                        ],
+                        "action_id": "priority_select",
+                        "initial_option": {
+                            "text": {"type": "plain_text", "text": form_data.get("priority", "medium").title()},
+                            "value": form_data.get("priority", "medium")
+                        }
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "technical_details_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "🤓 Dev Notes (optional)"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "multiline": True,
+                        "action_id": "technical_details_text",
+                        "initial_value": form_data.get("technical_details", "") or ""
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "blockers_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "🚫 Blockers? (optional)"},
+                    "element": {
+                        "type": "static_select",
+                        "placeholder": {"type": "plain_text", "text": "Select an option"},
+                        "options": [
+                            {"text": {"type": "plain_text", "text": "Yes"}, "value": "yes"},
+                            {"text": {"type": "plain_text", "text": "No"}, "value": "no"}
+                        ],
+                        "action_id": "blockers_select",
+                        "initial_option": {
+                            "text": {"type": "plain_text", "text": "Yes" if form_data.get("blockers") == "yes" else "No"},
+                            "value": form_data.get("blockers", "no")
+                        }
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "blockers_details_block",
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Blockers Details (optional)"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "multiline": True,
+                        "action_id": "blockers_details_text",
+                        "initial_value": form_data.get("blockers_details", "") or ""
+                    }
+                }
+            ],
+            "submit": {"type": "plain_text", "text": "Update"}
+        }
+        
+        # Open the modal
+        await client.views_open(
+            trigger_id=body["trigger_id"],
+            view=modal
+        )
+    except Exception as e:
+        logger.error(f"Error handling edit status: {e}")
+        logger.error(f"Full body: {body}")  # Add more detailed logging
+        await client.chat_postEphemeral(
+            channel=body["channel"]["id"],
+            user=body["user"]["id"],
+            text="😅 Sorry, there was an error opening the edit form. Please try again."
+        )
+
 @app.action("select_project_channel")
 async def handle_project_selection(ack, body, client, logger):
     await ack()
@@ -356,19 +531,73 @@ async def handle_project_selection(ack, body, client, logger):
     try:
         user_id = body["user"]["id"]
         channel_id = body["actions"][0]["selected_option"]["value"]
+        
+        # Build the initial modal without any pre-filled data
+        modal = build_status_modal(channel_id)
+        
+        # Open the modal
         await client.views_open(
             trigger_id=body["trigger_id"],
-            view=build_status_modal(channel_id)
+            view=modal
         )
     except Exception as e:
         logger.error(f"Error in project selection: {e}")
+        logger.error(f"Full body: {body}")  # Add more detailed logging
         await client.chat_postEphemeral(
             channel=user_id,
             user=user_id,
-            text="Sorry, there was an error opening the status form. Please try again."
+            text="😅 Sorry, there was an error opening the status form. Please try again."
         )
 
-# Handle the modal submission
+def get_form_data(view_state):
+    """
+    Safely extract form data from the view state, handling empty and optional fields.
+    """
+    try:
+        # Required fields with safe gets
+        update_text = view_state["update_block"]["update_text"]["value"]
+        next_steps = view_state["next_steps_block"]["next_steps_text"]["value"]
+        
+        # Priority with safe fallback
+        priority_block = view_state["priority_block"]["priority_select"]
+        priority = "medium"  # default
+        if priority_block.get("selected_option"):
+            priority = priority_block["selected_option"]["value"]
+
+        # Optional fields with safe gets
+        technical_details = None
+        if "technical_details_block" in view_state:
+            tech_block = view_state["technical_details_block"].get("technical_details_text", {})
+            if tech_block and isinstance(tech_block, dict):
+                technical_details = tech_block.get("value")
+
+        blockers = None
+        if "blockers_block" in view_state:
+            blockers_block = view_state["blockers_block"].get("blockers_select", {})
+            if blockers_block and isinstance(blockers_block, dict):
+                selected_option = blockers_block.get("selected_option")
+                if selected_option and isinstance(selected_option, dict):
+                    blockers = selected_option.get("value")
+
+        blockers_details = None
+        if "blockers_details_block" in view_state:
+            blockers_details_block = view_state["blockers_details_block"].get("blockers_details_text", {})
+            if blockers_details_block and isinstance(blockers_details_block, dict):
+                blockers_details = blockers_details_block.get("value")
+
+        return {
+            "update_text": update_text,
+            "next_steps": next_steps,
+            "priority": priority,
+            "technical_details": technical_details,
+            "blockers": blockers,
+            "blockers_details": blockers_details
+        }
+    except Exception as e:
+        logger.error(f"Error extracting form data: {e}")
+        logger.error(f"View state: {view_state}")
+        raise
+
 @app.view("status_submission")
 async def handle_status_submission(ack, body, view, client, logger):
     await ack()
@@ -377,74 +606,117 @@ async def handle_status_submission(ack, body, view, client, logger):
         user_id = body["user"]["id"]
         channel_id = body["view"]["private_metadata"]
         
+        # Get all the form values using the safe extraction function
+        form_data = get_form_data(view["state"]["values"])
+        
         # Get user's timezone
         user_tz = await get_user_timezone(user_id)
         current_time = get_user_local_time(user_tz)
         
-        # Safely get the update text (required field)
-        update_text = view["state"]["values"]["update_block"]["update_text"]["value"]
-        
-        # Get next steps
-        next_steps = view["state"]["values"]["next_steps_block"]["next_steps_text"]["value"]
-        
-        # Get priority
-        priority_block = view["state"]["values"]["priority_block"]["priority_select"]
-        priority = priority_block.get("selected_option", {}).get("value", "medium")
+        # Build the message with improved formatting
         priority_emoji = {
             "high": "🔴",
             "medium": "🟡",
             "low": "🟢"
-        }.get(priority, "🟡")  # Default to medium if something goes wrong
-        
-        # Safely get optional fields with proper None checks
-        technical_details = None
-        technical_details_block = view["state"]["values"].get("technical_details_block", {})
-        if technical_details_block:
-            technical_details_text = technical_details_block.get("technical_details_text", {})
-            if technical_details_text and isinstance(technical_details_text, dict):
-                technical_details = technical_details_text.get("value")
+        }.get(form_data["priority"], "🟡")
 
-        blockers = None
-        blockers_block = view["state"]["values"].get("blockers_block", {})
-        if blockers_block:
-            blockers_select = blockers_block.get("blockers_select", {})
-            if blockers_select and isinstance(blockers_select, dict):
-                selected_option = blockers_select.get("selected_option")
-                if selected_option and isinstance(selected_option, dict):
-                    blockers = selected_option.get("value")
-
-        blockers_details = None
-        blockers_details_block = view["state"]["values"].get("blockers_details_block", {})
-        if blockers_details_block:
-            blockers_details_text = blockers_details_block.get("blockers_details_text", {})
-            if blockers_details_text and isinstance(blockers_details_text, dict):
-                blockers_details = blockers_details_text.get("value")
-
-        # Build the message with timezone information
         message = (
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📊 *Status Update from <@{user_id}>*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"🕒 *Local Time:* {current_time.strftime('%I:%M %p')} ({user_tz})\n"
-            f"🎯 *Priority:* {priority_emoji} {priority.upper()}\n\n"
-            f"📝 *Update:*\n{update_text}\n\n"
-            f"⏭️ *Next Steps:*\n{next_steps}"
+            f"🎯 *Priority:* {priority_emoji} {form_data['priority'].upper()}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📝 *Update:*\n"
+            f"{form_data['update_text']}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏭️ *Next Steps:*\n"
+            f"{form_data['next_steps']}\n"
         )
         
-        # Only add optional sections if they have content
-        if technical_details and technical_details.strip():
-            message += f"\n\n🤓 *Dev Notes:*\n{technical_details}"
+        # Add optional sections with clear separation
+        if form_data["technical_details"] and form_data["technical_details"].strip():
+            message += (
+                f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤓 *Dev Notes:*\n"
+                f"{form_data['technical_details']}\n"
+            )
 
-        if blockers == "yes":
-            message += "\n\n🚫 *Blockers:* Yes"
-            if blockers_details and blockers_details.strip():
-                message += f"\n⚠️ *Blockers Details:*\n{blockers_details}"
-        elif blockers == "no":
-            message += "\n\n✅ *Blockers:* No"
+        if form_data["blockers"] == "yes":
+            message += (
+                f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🚫 *Blockers:* Yes\n"
+            )
+            if form_data["blockers_details"] and form_data["blockers_details"].strip():
+                message += f"⚠️ *Blockers Details:*\n{form_data['blockers_details']}\n"
+        elif form_data["blockers"] == "no":
+            message += (
+                f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ *Blockers:* No\n"
+            )
 
-        await client.chat_postMessage(
+        # Add a final separator
+        message += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        # Post the message with an edit button
+        response = await client.chat_postMessage(
             channel=channel_id,
-            text=message
+            text=message,
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": message}
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "✏️ Edit Update", "emoji": True},
+                            "style": "primary",
+                            "action_id": "edit_status_update",
+                            "value": json.dumps({
+                                "channel_id": channel_id,
+                                "form_data": form_data,
+                                "message_ts": None  # Will be set after message is posted
+                            })
+                        }
+                    ]
+                }
+            ]
         )
-        
+
+        # Update the button value with the message timestamp
+        if response["ok"]:
+            message_ts = response["ts"]
+            await client.chat_update(
+                channel=channel_id,
+                ts=message_ts,
+                text=message,
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": message}
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "✏️ Edit Update", "emoji": True},
+                                "style": "primary",
+                                "action_id": "edit_status_update",
+                                "value": json.dumps({
+                                    "channel_id": channel_id,
+                                    "form_data": form_data,
+                                    "message_ts": message_ts
+                                })
+                            }
+                        ]
+                    }
+                ]
+            )
+
         # Ask if they have another project to update
         await client.chat_postMessage(
             channel=user_id,
@@ -520,29 +792,6 @@ async def handle_another_update(ack, body, client, logger):
             user=user_id,
             text="😅 Oops! Something went wrong while processing your choice. Please try again!"
         )
-
-# Function to get user's timezone
-async def get_user_timezone(user_id: str) -> str:
-    """Get a user's timezone from their Slack profile."""
-    try:
-        user_info = await client.users_info(user=user_id)
-        if user_info["ok"]:
-            tz = user_info["user"].get("tz", "UTC")
-            return tz
-        return "UTC"
-    except Exception as e:
-        logger.error(f"Error getting timezone for user {user_id}: {e}")
-        return "UTC"
-
-# Function to get current time in user's timezone
-def get_user_local_time(user_tz: str) -> datetime:
-    """Get current time in user's timezone."""
-    try:
-        tz = pytz.timezone(user_tz)
-        return datetime.now(tz)
-    except Exception as e:
-        logger.error(f"Error converting to timezone {user_tz}: {e}")
-        return datetime.now(pytz.UTC)
 
 # Function to check if it's 5 PM in user's timezone
 def is_5pm_in_timezone(user_tz: str) -> bool:
@@ -645,3 +894,111 @@ if __name__ == "__main__":
     
     # Run the main function
     asyncio.run(main(), debug=True)
+
+# Add handler for the edit submission
+@app.view("status_submission_edit")
+async def handle_status_edit_submission(ack, body, view, client, logger):
+    """Handle the submission of an edited status update."""
+    await ack()
+    logger.info(f"Edit submission received: {body}")
+    
+    try:
+        # Get the metadata
+        metadata = json.loads(view["private_metadata"])
+        channel_id = metadata["channel_id"]
+        message_ts = metadata["message_ts"]
+        user_id = body["user"]["id"]
+        
+        # Process the form data using the safe extraction function
+        form_data = get_form_data(view["state"]["values"])
+        
+        # Get user's timezone
+        user_tz = await get_user_timezone(user_id)
+        current_time = get_user_local_time(user_tz)
+        
+        # Build the message (same as original submission)
+        priority_emoji = {
+            "high": "🔴",
+            "medium": "🟡",
+            "low": "🟢"
+        }.get(form_data["priority"], "🟡")
+
+        message = (
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 *Status Update from <@{user_id}>* (edited)\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🕒 *Local Time:* {current_time.strftime('%I:%M %p')} ({user_tz})\n"
+            f"🎯 *Priority:* {priority_emoji} {form_data['priority'].upper()}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📝 *Update:*\n"
+            f"{form_data['update_text']}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏭️ *Next Steps:*\n"
+            f"{form_data['next_steps']}\n"
+        )
+        
+        if form_data["technical_details"] and form_data["technical_details"].strip():
+            message += (
+                f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤓 *Dev Notes:*\n"
+                f"{form_data['technical_details']}\n"
+            )
+
+        if form_data["blockers"] == "yes":
+            message += (
+                f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🚫 *Blockers:* Yes\n"
+            )
+            if form_data["blockers_details"] and form_data["blockers_details"].strip():
+                message += f"⚠️ *Blockers Details:*\n{form_data['blockers_details']}\n"
+        elif form_data["blockers"] == "no":
+            message += (
+                f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"✅ *Blockers:* No\n"
+            )
+
+        message += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        # Update the original message
+        await client.chat_update(
+            channel=channel_id,
+            ts=message_ts,
+            text=message,
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": message}
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "✏️ Edit Update", "emoji": True},
+                            "style": "primary",
+                            "action_id": "edit_status_update",
+                            "value": json.dumps({
+                                "channel_id": channel_id,
+                                "form_data": form_data,
+                                "message_ts": message_ts
+                            })
+                        }
+                    ]
+                }
+            ]
+        )
+
+        # Notify the user
+        await client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text="✅ Your status update has been edited!"
+        )
+    except Exception as e:
+        logger.error(f"Error in status edit submission: {e}")
+        logger.error(f"Full body: {body}")
+        await client.chat_postEphemeral(
+            channel=channel_id,
+            user=user_id,
+            text="😅 Sorry, there was an error updating your status. Please try again."
+        )

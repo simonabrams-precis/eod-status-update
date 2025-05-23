@@ -1,10 +1,20 @@
 import os
 import logging
 import asyncio
+import json
+from datetime import datetime, timedelta
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.errors import SlackApiError
 
 logger = logging.getLogger(__name__)
+
+# Cache for developer IDs with expiration
+_developer_cache = {
+    "ids": None,
+    "expires_at": None
+}
+
+CACHE_DURATION = timedelta(minutes=5)  # Cache developer list for 5 minutes
 
 async def retry_with_backoff(func, max_retries=3, initial_delay=1, *args, **kwargs):
     """
@@ -34,52 +44,70 @@ async def retry_with_backoff(func, max_retries=3, initial_delay=1, *args, **kwar
     logger.error(f"All retry attempts failed. Last error: {last_error}")
     raise last_error
 
-async def get_developer_user_ids(client: AsyncWebClient) -> list[str]:
-    """Get list of developer user IDs from the usergroup."""
+async def get_developer_user_ids(client=None):
+    """Get the list of developer user IDs, either from usergroup or fallback list."""
+    global _developer_cache
+    
+    # Check if we have a valid cache
+    if _developer_cache["ids"] is not None and _developer_cache["expires_at"] is not None:
+        if datetime.now() < _developer_cache["expires_at"]:
+            logger.debug("Using cached developer list")
+            return _developer_cache["ids"]
+    
     try:
-        # Try to get developers from usergroup first
+        # Try usergroup first
         usergroup_id = os.environ.get("DEVELOPER_USERGROUP_ID")
-        logger.info(f"Developer usergroup ID from environment: {usergroup_id}")
-        
         if usergroup_id:
+            logger.info(f"Developer usergroup ID from environment: {usergroup_id}")
+            logger.info(f"Attempting to fetch users from usergroup {usergroup_id}")
+            
             try:
-                logger.info(f"Attempting to fetch users from usergroup {usergroup_id}")
-                # Call the Slack API method directly with retry wrapper
+                if client is None:
+                    raise ValueError("Slack client is required for usergroup fetch")
+                
                 response = await retry_with_backoff(
                     client.usergroups_users_list,
                     usergroup=usergroup_id
                 )
                 
                 if response["ok"]:
-                    users = response["users"]
-                    logger.info(f"Successfully fetched {len(users)} users from usergroup")
-                    return users
+                    user_ids = response["users"]
+                    logger.info(f"Successfully fetched {len(user_ids)} users from usergroup")
+                    
+                    # Update cache
+                    _developer_cache["ids"] = user_ids
+                    _developer_cache["expires_at"] = datetime.now() + CACHE_DURATION
+                    
+                    return user_ids
                 else:
-                    error = response.get('error', 'unknown error')
-                    if error == 'missing_scope':
-                        logger.warning("Missing usergroups:read scope. Using fallback developer list.")
-                    else:
-                        logger.error(f"Error in usergroup response: {error}")
+                    logger.error(f"Failed to fetch usergroup users: {response.get('error')}")
             except SlackApiError as e:
                 if e.response["error"] == "missing_scope":
-                    logger.error("Missing 'usergroups:read' scope in Slack app permissions")
+                    logger.error("Missing required scope 'usergroups:read' for the Slack app")
                 elif e.response["error"] == "ratelimited":
-                    logger.error("Rate limited by Slack API")
+                    logger.error("Rate limited while fetching usergroup")
                 else:
-                    logger.error(f"Slack API error fetching usergroup users: {e.response['error']}")
+                    logger.error(f"Error fetching usergroup users: {e}")
             except Exception as e:
-                logger.error(f"Error fetching usergroup users: {e}")
+                logger.error(f"Unexpected error fetching usergroup users: {e}")
         
         # Fallback to environment variable if usergroup fails
-        fallback_ids = get_fallback_developer_ids()
+        fallback_ids = os.environ.get("FALLBACK_DEVELOPER_IDS", "")
         if fallback_ids:
-            logger.info("Using fallback developer IDs from environment")
-            return fallback_ids
+            user_ids = [uid.strip() for uid in fallback_ids.split(",") if uid.strip()]
+            logger.info(f"Using fallback list with {len(user_ids)} developers")
+            
+            # Update cache
+            _developer_cache["ids"] = user_ids
+            _developer_cache["expires_at"] = datetime.now() + CACHE_DURATION
+            
+            return user_ids
         
-        logger.warning("No developer IDs found! Please configure DEVELOPER_USERGROUP_ID or FALLBACK_DEVELOPER_IDS")
+        logger.error("No developer IDs found in usergroup or fallback list")
         return []
+        
     except Exception as e:
-        logger.error(f"Error getting developer IDs: {e}")
+        logger.error(f"Error in get_developer_user_ids: {e}")
         return []
 
 def get_fallback_developer_ids() -> list[str]:

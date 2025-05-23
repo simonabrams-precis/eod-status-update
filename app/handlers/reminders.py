@@ -2,17 +2,27 @@ import os
 import logging
 import asyncio
 import aioschedule
-from datetime import datetime
+from datetime import datetime, date
 import pytz
 from app.utils.timezone import get_user_timezone, get_user_local_time
 from app.utils.developers import get_developer_user_ids
+from app.utils.developers import retry_with_backoff
 
 logger = logging.getLogger(__name__)
+
+# Track sent reminders to avoid duplicates
+sent_reminders = set()  # Set of (user_id, date) tuples
+
+def get_reminder_key(user_id: str) -> tuple:
+    """Get the key for tracking reminders for a user."""
+    return (user_id, date.today().isoformat())
 
 async def send_initial_prompt(client, user_id):
     """Send the initial status update prompt to a user."""
     try:
-        await client.chat_postMessage(
+        # Use retry_with_backoff for rate limit handling
+        await retry_with_backoff(
+            client.chat_postMessage,
             channel=user_id,
             text="Do you have any end-of-day status updates to share today?",
             blocks=[
@@ -31,6 +41,9 @@ async def send_initial_prompt(client, user_id):
                 }
             ]
         )
+        # Mark reminder as sent
+        sent_reminders.add(get_reminder_key(user_id))
+        logger.info(f"Sent reminder to user {user_id}")
     except Exception as e:
         logger.error(f"Error sending initial prompt to {user_id}: {e}")
 
@@ -48,40 +61,68 @@ def is_5pm_in_timezone(user_tz: str) -> bool:
 async def send_daily_reminders(app):
     """Send reminders to all developers at 5 PM in their local timezone."""
     try:
-        # Get all developer user IDs
+        # Get all developer user IDs (now using cache)
         developer_ids = await get_developer_user_ids(app._client)
-        logger.info(f"Running scheduled reminder check for {len(developer_ids)} developers")
-        
-        for user_id in developer_ids:
-            try:
-                # Get user's timezone
-                user_tz = await get_user_timezone(app._client, user_id)
-                current_time = get_user_local_time(user_tz)
-                
-                # Check if it's 5 PM in their timezone
-                if is_5pm_in_timezone(user_tz):
-                    logger.info(f"🕔 It's 5 PM for user {user_id} in {user_tz} - Sending reminder")
-                    await send_initial_prompt(app._client, user_id)
-                else:
-                    logger.debug(f"Not 5 PM yet for user {user_id} in {user_tz}. Current time: {current_time.strftime('%I:%M %p')}")
+        if not developer_ids:
+            logger.warning("No developers found to send reminders to")
+            return
             
-            except Exception as e:
-                logger.error(f"Error processing reminder for user {user_id}: {e}")
-                continue
+        # Process developers in batches to avoid rate limits
+        batch_size = 5
+        tasks = []
+        reminders_sent = 0
+        
+        for i in range(0, len(developer_ids), batch_size):
+            batch = developer_ids[i:i + batch_size]
+            batch_tasks = []
+            
+            for user_id in batch:
+                # Skip if reminder already sent today
+                if get_reminder_key(user_id) in sent_reminders:
+                    continue
+                
+                try:
+                    # Get user's timezone
+                    user_tz = await get_user_timezone(app._client, user_id)
+                    current_time = get_user_local_time(user_tz)
+                    
+                    # Check if it's 5 PM in their timezone
+                    if is_5pm_in_timezone(user_tz):
+                        logger.info(f"🕔 Sending reminder to user {user_id} in {user_tz}")
+                        batch_tasks.append(send_initial_prompt(app._client, user_id))
+                        reminders_sent += 1
+                
+                except Exception as e:
+                    logger.error(f"Error processing reminder for user {user_id}: {e}")
+                    continue
+            
+            # Wait for batch to complete before processing next batch
+            if batch_tasks:
+                await asyncio.gather(*batch_tasks)
+                await asyncio.sleep(1)  # Small delay between batches
+        
+        # Only log if we actually sent any reminders
+        if reminders_sent > 0:
+            logger.info(f"Sent {reminders_sent} reminders in this check")
                 
     except Exception as e:
         logger.error(f"Error in send_daily_reminders: {e}")
+
+async def cleanup_old_reminders():
+    """Clean up old reminder records."""
+    today = date.today().isoformat()
+    sent_reminders.clear()  # Clear all old records
+    logger.info("Cleaned up old reminder records")
 
 async def start_reminder_scheduler(app):
     """Start the reminder scheduler."""
     logger.info("Starting reminder scheduler...")
     
-    def create_reminder_task():
-        """Create a task for running reminders."""
-        return asyncio.create_task(send_daily_reminders(app))
+    # Schedule cleanup at midnight UTC
+    aioschedule.every().day.at("00:00").do(cleanup_old_reminders)
     
     # Schedule the reminder check to run every minute
-    aioschedule.every(1).minutes.do(create_reminder_task)
+    aioschedule.every(1).minutes.do(send_daily_reminders, app)
     
     while True:
         try:

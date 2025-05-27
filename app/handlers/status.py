@@ -134,63 +134,95 @@ def register_status_handlers(app):
                 message += f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 message += f"🚫 *Blockers:*\n{form_data.get('blockers_details', 'No details provided')}\n"
 
+            # Handle media files
+            media_blocks = []
+            if "media_block" in view["state"]["values"]:
+                media_files = view["state"]["values"]["media_block"]["media_upload"]["files"]
+                if media_files:
+                    message += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    message += "📎 *Attached Media:*\n"
+                    
+                    for file in media_files:
+                        file_id = file["id"]
+                        file_info = await client.files_info(file=file_id)
+                        if file_info["ok"]:
+                            file_data = file_info["file"]
+                            file_url = file_data["url_private"]
+                            file_name = file_data["name"]
+                            file_type = file_data["filetype"]
+                            
+                            # Add file to message
+                            message += f"• {file_name}\n"
+                            
+                            # Add file block if it's an image
+                            if file_type in ["png", "jpg", "jpeg", "gif"]:
+                                media_blocks.append({
+                                    "type": "image",
+                                    "image_url": file_url,
+                                    "alt_text": file_name
+                                })
+                            else:
+                                # For non-image files, add a link
+                                media_blocks.append({
+                                    "type": "section",
+                                    "text": {
+                                        "type": "mrkdwn",
+                                        "text": f"📄 <{file_url}|{file_name}>"
+                                    }
+                                })
+
+            # Post the message with media blocks
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": message}
+                }
+            ]
+            
+            # Add media blocks if any
+            blocks.extend(media_blocks)
+            
+            # Add edit button
+            blocks.append({
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "✏️ Edit Update", "emoji": True},
+                        "style": "primary",
+                        "action_id": "edit_status_update",
+                        "value": json.dumps({
+                            "channel_id": channel_id,
+                            "form_data": form_data,
+                            "message_ts": None,
+                            "media_files": [f["id"] for f in media_files] if "media_block" in view["state"]["values"] else []
+                        })
+                    }
+                ]
+            })
+
             # Post the message
             response = await client.chat_postMessage(
                 channel=channel_id,
                 text=message,
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": message}
-                    },
-                    {
-                        "type": "actions",
-                        "elements": [
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "✏️ Edit Update", "emoji": True},
-                                "style": "primary",
-                                "action_id": "edit_status_update",
-                                "value": json.dumps({
-                                    "channel_id": channel_id,
-                                    "form_data": form_data,
-                                    "message_ts": None
-                                })
-                            }
-                        ]
-                    }
-                ]
+                blocks=blocks
             )
 
             # Update the button with message timestamp
             if response["ok"]:
                 message_ts = response["ts"]
+                blocks[-1]["elements"][0]["value"] = json.dumps({
+                    "channel_id": channel_id,
+                    "form_data": form_data,
+                    "message_ts": message_ts,
+                    "media_files": [f["id"] for f in media_files] if "media_block" in view["state"]["values"] else []
+                })
+                
                 await client.chat_update(
                     channel=channel_id,
                     ts=message_ts,
                     text=message,
-                    blocks=[
-                        {
-                            "type": "section",
-                            "text": {"type": "mrkdwn", "text": message}
-                        },
-                        {
-                            "type": "actions",
-                            "elements": [
-                                {
-                                    "type": "button",
-                                    "text": {"type": "plain_text", "text": "✏️ Edit Update", "emoji": True},
-                                    "style": "primary",
-                                    "action_id": "edit_status_update",
-                                    "value": json.dumps({
-                                        "channel_id": channel_id,
-                                        "form_data": form_data,
-                                        "message_ts": message_ts
-                                    })
-                                }
-                            ]
-                        }
-                    ]
+                    blocks=blocks
                 )
 
             # Ask about another update
@@ -235,6 +267,7 @@ def register_status_handlers(app):
             channel_id = value_data["channel_id"]
             form_data = value_data["form_data"]
             message_ts = value_data.get("message_ts")
+            media_files = value_data.get("media_files", [])  # Get media files from the button value
             
             if not message_ts:
                 logger.error("Missing message timestamp in edit button value")
@@ -246,9 +279,11 @@ def register_status_handlers(app):
                 return
                 
             logger.info(f"Edit status triggered by user {user_id} for message {message_ts}")
+            logger.info(f"Media files to preserve: {media_files}")
             
-            # Add message_ts to form_data to ensure it's included in the modal
+            # Add message_ts and media_files to form_data
             form_data["message_ts"] = message_ts
+            form_data["media_files"] = media_files  # Add media files to form data
             
             # Build and open the edit modal
             modal = build_status_modal(channel_id, form_data)
@@ -275,8 +310,11 @@ def register_status_handlers(app):
             await ack()
             metadata = json.loads(view["private_metadata"])
             channel_id = metadata["channel_id"]
-            message_ts = metadata.get("message_ts")  # Use .get() to safely handle missing ts
+            message_ts = metadata.get("message_ts")
             user_id = body["user"]["id"]
+            existing_media_files = metadata.get("media_files", [])
+            
+            logger.info(f"Edit submission - Existing media files: {existing_media_files}")
             
             if not message_ts:
                 logger.error("Missing message timestamp in edit submission")
@@ -323,33 +361,126 @@ def register_status_handlers(app):
                 message += f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 message += f"🚫 *Blockers:*\n{form_data.get('blockers_details', 'No details provided')}\n"
 
+            # Handle media files
+            media_blocks = []
+            media_files = []
+
+            # First, handle existing media files that weren't removed
+            if "media_block" in view["state"]["values"]:
+                current_files = view["state"]["values"]["media_block"]["media_upload"]["files"]
+                current_file_ids = [f["id"] for f in current_files]
+                
+                # Keep only the existing files that are still present
+                for file_id in existing_media_files:
+                    if file_id in current_file_ids:
+                        try:
+                            file_info = await client.files_info(file=file_id)
+                            if file_info["ok"]:
+                                file_data = file_info["file"]
+                                file_url = file_data["url_private"]
+                                file_name = file_data["name"]
+                                file_type = file_data["filetype"]
+                                
+                                # Add file to message
+                                message += f"• {file_name}\n"
+                                
+                                # Add file block if it's an image
+                                if file_type in ["png", "jpg", "jpeg", "gif"]:
+                                    media_blocks.append({
+                                        "type": "image",
+                                        "image_url": file_url,
+                                        "alt_text": file_name
+                                    })
+                                else:
+                                    # For non-image files, add a link
+                                    media_blocks.append({
+                                        "type": "section",
+                                        "text": {
+                                            "type": "mrkdwn",
+                                            "text": f"📄 <{file_url}|{file_name}>"
+                                        }
+                                    })
+                                media_files.append({"id": file_id})
+                        except Exception as e:
+                            logger.error(f"Error processing existing file {file_id}: {e}")
+
+            # Then, handle new media files
+            if "media_block" in view["state"]["values"]:
+                new_files = view["state"]["values"]["media_block"]["media_upload"]["files"]
+                if new_files:
+                    for file in new_files:
+                        file_id = file["id"]
+                        if file_id not in existing_media_files:  # Only process new files
+                            try:
+                                file_info = await client.files_info(file=file_id)
+                                if file_info["ok"]:
+                                    file_data = file_info["file"]
+                                    file_url = file_data["url_private"]
+                                    file_name = file_data["name"]
+                                    file_type = file_data["filetype"]
+                                    
+                                    # Add file to message
+                                    message += f"• {file_name}\n"
+                                    
+                                    # Add file block if it's an image
+                                    if file_type in ["png", "jpg", "jpeg", "gif"]:
+                                        media_blocks.append({
+                                            "type": "image",
+                                            "image_url": file_url,
+                                            "alt_text": file_name
+                                        })
+                                    else:
+                                        # For non-image files, add a link
+                                        media_blocks.append({
+                                            "type": "section",
+                                            "text": {
+                                                "type": "mrkdwn",
+                                                "text": f"📄 <{file_url}|{file_name}>"
+                                            }
+                                        })
+                                    media_files.append({"id": file_id})
+                            except Exception as e:
+                                logger.error(f"Error processing new file {file_id}: {e}")
+
+            # Build blocks for the message
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": message}
+                }
+            ]
+            
+            # Add media blocks if any
+            if media_blocks:
+                message += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                message += "📎 *Attached Media:*\n"
+                blocks.extend(media_blocks)
+            
+            # Add edit button
+            blocks.append({
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "✏️ Edit Update", "emoji": True},
+                        "style": "primary",
+                        "action_id": "edit_status_update",
+                        "value": json.dumps({
+                            "channel_id": channel_id,
+                            "form_data": form_data,
+                            "message_ts": message_ts,
+                            "media_files": [f["id"] for f in media_files]  # Include all media files
+                        })
+                    }
+                ]
+            })
+
             # Update the message
             await client.chat_update(
                 channel=channel_id,
                 ts=message_ts,
                 text=message,
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": message}
-                    },
-                    {
-                        "type": "actions",
-                        "elements": [
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "✏️ Edit Update", "emoji": True},
-                                "style": "primary",
-                                "action_id": "edit_status_update",
-                                "value": json.dumps({
-                                    "channel_id": channel_id,
-                                    "form_data": form_data,
-                                    "message_ts": message_ts
-                                })
-                            }
-                        ]
-                    }
-                ]
+                blocks=blocks
             )
 
             # Notify the user

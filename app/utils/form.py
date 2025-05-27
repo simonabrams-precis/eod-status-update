@@ -79,7 +79,49 @@ def build_status_modal(channel_id, form_data=None):
                 "action_id": "update_text",
                 "initial_value": get_string_value("update_text")
             }
+        }
+    ]
+
+    # Add existing files section if editing
+    if form_data and form_data.get("media_files"):
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "📎 *Currently attached files:*\nThese files will be kept unless you remove them in your edit."
+            }
+        })
+        for file_id in form_data["media_files"]:
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"• File ID: `{file_id}` (will be preserved)"
+                    }
+                ]
+            })
+
+    # Add file upload section
+    blocks.append({
+        "type": "input",
+        "block_id": "media_block",
+        "optional": True,
+        "label": {"type": "plain_text", "text": "📎 Add New Media (optional)"},
+        "element": {
+            "type": "file_input",
+            "action_id": "media_upload",
+            "filetypes": ["png", "jpg", "jpeg", "gif", "pdf"],
+            "max_files": 3
         },
+        "hint": {
+            "type": "plain_text",
+            "text": "You can upload up to 3 new files (images or PDFs). Max 10MB per file. Existing files will be kept unless removed."
+        }
+    })
+
+    # Add the rest of the blocks
+    blocks.extend([
         {
             "type": "input",
             "block_id": "next_steps_block",
@@ -154,14 +196,15 @@ def build_status_modal(channel_id, form_data=None):
                 "initial_value": get_string_value("blockers_details")
             }
         }
-    ]
+    ])
 
     return {
         "type": "modal",
         "callback_id": "status_submission_edit" if form_data else "status_submission",
         "private_metadata": json.dumps({
             "channel_id": channel_id,
-            "message_ts": form_data.get("message_ts") if form_data else None
+            "message_ts": form_data.get("message_ts") if form_data else None,
+            "media_files": form_data.get("media_files", []) if form_data else []
         }),
         "title": {"type": "plain_text", "text": "Edit Status Update" if form_data else "Project Status Update"},
         "blocks": blocks,
